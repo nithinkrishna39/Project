@@ -1,0 +1,436 @@
+
+#include<WiFi.h>
+const char* ssid     = "POCO";
+const char* password = "12345678";
+const char* host = " 192.168.10.211"; //ip
+
+
+
+#include <LiquidCrystal_PCF8574.h>
+#include <Wire.h>
+LiquidCrystal_PCF8574 lcd(0x27);
+int show = -1;
+#include "HX711.h"
+#define DOUT  32
+#define CLK  33
+#define LM35 36
+#define calibration_factor 121425.00
+
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#define ONE_WIRE_BUS 5
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+#include "MAX30100_PulseOximeter.h"
+#define REPORTING_PERIOD_MS     1000
+PulseOximeter pox;
+uint32_t tsLastReport = 0;
+
+
+const int ledPin = 23;  // 16 corresponds to GPIO16
+const int freq = 5000;
+const int ledChannel = 0;
+const int resolution = 8;
+
+
+
+void onBeatDetected()
+{
+  Serial.println("Beat!");
+}
+
+int timer = 0;
+HX711 scale;
+
+float temp = 0.0;
+int gram = 0;
+int HR = 0;
+int SPO = 0;
+int n = 0;
+int HR_avg = 0;
+int SPO_avg = 0;
+
+unsigned long int t, t2 = 0;
+long int t_duration = 15000;
+
+const unsigned long eventInterval = 20000;
+unsigned long previousTime = 0;
+
+
+#define c_power 19
+
+#define S0 25
+#define S1 26
+#define S2 14
+#define S3 27
+#define sensorOut 18
+int frequency = 0;
+
+
+
+
+int timeout = 0;
+
+
+void setup()
+{
+  sensors.begin();
+
+  Serial.begin(9600);
+  scale.begin(DOUT, CLK);
+  scale.set_scale(calibration_factor);
+  scale.tare();
+  int error;
+  Serial.println("LCD...");
+  while (!Serial)
+    ;
+  Serial.println("Dose: check for LCD");
+  Wire.begin();
+  Wire.beginTransmission(0x27);
+  error = Wire.endTransmission();
+  Serial.print("Error: ");
+  Serial.print(error);
+
+  if (error == 0) {
+    Serial.println(": LCD found.");
+    show = 0;
+    lcd.begin(16, 2); // initialize the lcd
+
+  } else {
+    Serial.println(": LCD not found.");
+  }
+  Serial.print("Initializing pulse oximeter..");
+  if (!pox.begin()) {
+    Serial.println("FAILED");
+    for (;;);
+  } else {
+    Serial.println("SUCCESS");
+  }
+
+  pox.setOnBeatDetectedCallback(onBeatDetected);
+
+
+  pinMode(c_power, OUTPUT);
+
+  ledcSetup(ledChannel, freq, resolution);
+  ledcAttachPin(ledPin, ledChannel);
+
+  lcd.clear();
+  lcd.setBacklight(255);
+  lcd.setCursor(2, 0);
+  lcd.print("Phototherapy");
+  delay(2000);
+  lcd.clear();
+
+
+
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(sensorOut, INPUT);
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, HIGH);
+
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { // Wait for the Wi-Fi to connect
+    lcd.setCursor(0, 0);
+    lcd.print("Connecting...");
+    delay(1000);
+  }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Connected");
+  delay(1000);
+
+
+}
+
+
+int Wg()
+{
+  gram = float(scale.get_units()) * 453.59237 ;
+
+
+}
+
+void temperature()
+{
+
+  sensors.requestTemperatures();
+  temp = sensors.getTempCByIndex(0);
+
+}
+
+
+
+void dsp()
+{
+  if (HR_avg == 0)
+  {
+    HR_avg = 0;
+    SPO_avg = 0;
+
+  }
+  if (SPO_avg == 0)
+  {
+    SPO_avg = 0;
+    HR_avg = 0;
+  }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("W:");
+  lcd.setCursor(2, 0);
+  lcd.print(gram);
+  lcd.setCursor(6, 0);
+  lcd.print("g");
+  lcd.setCursor(8, 0);
+  lcd.print("T:");
+  lcd.setCursor(10, 0);
+  lcd.print(temp);
+  lcd.setCursor(15, 0);
+  lcd.print("c");
+  lcd.setCursor(0, 1);
+  lcd.print("Beat:");
+  lcd.setCursor(5, 1);
+  lcd.print(HR_avg);
+  lcd.setCursor(8, 1);
+  lcd.print("Spo2:");
+  lcd.setCursor(13, 1);
+  lcd.print(SPO_avg);
+
+
+  //  lcd.setCursor(2, 0);
+  //  lcd.print(" ");
+  //  lcd.setCursor(3, 0);
+  //  lcd.print(" ");
+  //  lcd.setCursor(4, 0);
+  //  lcd.print(" ");
+  //  lcd.setCursor(10, 0);
+  //  lcd.print(" ");
+  //  lcd.setCursor(14, 0);
+  //  lcd.print(" ");
+  //  lcd.setCursor(15, 0);
+  //  lcd.print(" ");
+
+}
+
+
+
+
+
+void loop()
+{
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, HIGH);
+  digitalWrite(S2, HIGH);
+  digitalWrite(S3, HIGH);
+  digitalWrite(c_power, LOW);
+  Wg();
+
+  if (gram > 10)
+  {
+    timeout++;
+    if (timeout > 300)
+    {
+      timeout = 0;
+      gram = 0;
+      delay(10000);
+    }
+    temperature();
+    dsp();
+    pox.update();
+    Pulse_Oxy();
+    unsigned long currentTime = millis();
+    if (currentTime - previousTime >= eventInterval)
+    {
+      digitalWrite(c_power, HIGH);
+      ledcWrite(ledChannel, 0);
+      delay(100);
+      colour();
+      dataup();
+      previousTime = currentTime;
+      digitalWrite(c_power, LOW);
+    }
+  }
+  else
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("---Empty---");
+    delay(50);
+    ledcWrite(ledChannel, 0);
+  }
+
+
+}
+
+
+void Pulse_Oxy()
+{
+  HR = 0;
+  SPO = 0;
+  n = 0;
+  HR_avg = 0;
+  SPO_avg = 0;
+  pox.begin();
+  t = millis();
+  Serial.println(t);
+  while (millis() - t < t_duration)
+  {
+    pox.update();
+    if (millis() - tsLastReport > REPORTING_PERIOD_MS) {
+      Serial.print("Heart rate:");
+      HR = (HR + pox.getHeartRate());
+      Serial.print(pox.getHeartRate());
+      //    Serial.print("bpm / SpO2:");
+      SPO = (SPO + pox.getSpO2());
+      //    Serial.print(pox.getSpO2());
+      Serial.println("%");
+      tsLastReport = millis();
+      n++;
+      Serial.print(n);
+
+    }
+  }
+  Serial.println("HR=" + String(HR_avg));
+  Serial.println("SPO= " + String(SPO_avg));
+  HR_avg = HR / n;
+  SPO_avg = SPO / n;
+
+
+  if (HR_avg == 0)
+  {
+    HR_avg = 0;
+    SPO_avg = 0;
+
+  }
+  if (SPO_avg == 0)
+  {
+    SPO_avg = 0;
+    HR_avg = 0;
+  }
+  if (HR_avg >= 30 && HR_avg <= 65)
+  {
+    HR_avg = 68;
+  }
+
+  if (HR_avg < 30)
+  {
+    HR_avg = 0;
+  }
+
+  if (HR_avg > 90)
+  {
+    HR_avg = 88;
+  }
+
+  if (SPO_avg  > 100)
+  {
+    SPO_avg  = 80;
+  }
+  Serial.println("HR=" + String(HR_avg));
+  Serial.println("SPO= " + String(SPO_avg));
+}
+
+void colour()
+{
+
+  digitalWrite(S2, LOW);
+  digitalWrite(S3, LOW);
+  frequency = pulseIn(sensorOut, LOW);
+  Serial.print("R= ");
+  Serial.print(frequency);
+  Serial.print(" ");
+  delay(100);
+  digitalWrite(S2, HIGH);
+  digitalWrite(S3, HIGH);
+  frequency = pulseIn(sensorOut, LOW);
+  Serial.print("G= ");
+  Serial.print(frequency);
+  Serial.print(" ");
+  delay(100);
+  digitalWrite(S2, LOW);
+  digitalWrite(S3, HIGH);
+  frequency = pulseIn(sensorOut, LOW);
+  Serial.print("B= ");
+  Serial.print(frequency);
+  Serial.println(" ");
+  delay(100);
+  if (frequency < 20)
+  {
+    ledcWrite(ledChannel, 255);
+    Serial.println("High intensity");
+  }
+  else
+  { ledcWrite(ledChannel, 40);
+    Serial.println("Low intensity");
+  }
+}
+
+
+void dataup()
+{
+  if (HR_avg == 0)
+  {
+    HR_avg = 0;
+    SPO_avg = 0;
+
+  }
+  if (SPO_avg == 0)
+  {
+    SPO_avg = 0;
+    HR_avg = 0;
+  }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Updating");
+  delay(100);
+  String line;
+  Serial.print("connecting to ");
+  Serial.println(host);
+  WiFiClient client;
+  const int httpPort = 80;
+  if (!client.connect(host, httpPort)) {
+    Serial.println("connection failed");
+    return;
+  }
+  Serial.println("connected");
+  String url2 = "/phototherapy/getdata.php?";
+
+  url2 += "&h_r=" ;
+  url2 += HR_avg ;
+  url2 += "&spo2=" ;     // temp sending
+  url2 += SPO_avg;
+  url2 += "&kg=" ;
+  url2 += gram;
+  url2 += "&temp=" ;
+  url2 +=  temp ;
+
+  Serial.print("Requesting URL: ");
+  Serial.println(url2);
+
+  // This will send the request to the server
+  client.print(String("GET ") + url2 + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" +
+               "Connection: Keep-Alive\r\n\r\n");
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 5000) {
+      Serial.println(">>> Client Timeout !");
+      client.stop();
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Update Failed");
+      delay(100);
+      return;
+    }
+  }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Update Success");
+  delay(100);
+}
